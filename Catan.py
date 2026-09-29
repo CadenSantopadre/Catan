@@ -12,7 +12,7 @@ class Vertex: #Vertexes are intersections between hexes
     #Coord is a tuple of hte 3 hex positions meeting at the corner
     coordinate: Tuple[Tuple[int,int,int], Tuple[int,int,int], Tuple[int,int,int]]
     building_type: Optional[str] = None    # None, "Settlement", or "City"
-    owner_id: Optional[str] = None         # "Player_1", "Player_2", etc.
+    owner_id: Optional[int] = None         # 0,1,2, etc.
 
 @dataclass
 class Edge: #Edges are the connectors between vertices
@@ -76,6 +76,16 @@ class CatanBoard:
         if token in self.roll_index:
             self.roll_index[token].append(new_hex)
 
+def get_vertex_xy(vertex_key, size=1.0):
+    #Gives the x y value of a vertex
+    h_dist = size * np.sqrt(3)
+    v_dist = size * 1.5
+    xs, ys = [], []
+    for (q, r, s) in vertex_key:
+        xs.append(h_dist * (q + r / 2.0))
+        ys.append(v_dist * r)
+    return np.mean(xs), np.mean(ys)
+
 engine = CatanBoard()
 terrain = ["Wood",
            "Wood",
@@ -135,54 +145,6 @@ for q in range(-2, 3):
 print(f"Total Hexes Generated: {len(engine.hexes)}")
 print(f"Total Unique Vertices Registered: {len(engine.vertices)}")
 
-def draw_catan_board(board: CatanBoard):
-    fig, ax = plt.subplots(figsize=(10, 10))
-    ax.set_aspect('equal')
-    
-    color_map = {
-        "Wood": "#4B3908",
-        "Wheat": "#FFD700",
-        "Wool": "#90EE90",
-        "Brick": "#B22222",
-        "Ore": "#708090",
-        "Desert": "#F4A460"
-    }
-    
-    size = 1.0
-    h_dist = size * np.sqrt(3)
-    v_dist = size * 1.5
-
-    for coord, hex_tile in board.hexes.items():
-        q, r, s = coord
-        
-        #Convert cube coordinates to xy
-        x = h_dist * (q + r / 2.0)
-        y = v_dist * r
-        
-        #get color
-        facecolor = color_map.get(hex_tile.resource, "#FFFFFF")
-        
-        hex_patch = RegularPolygon(
-            (x, y), numVertices=6, radius=size, facecolor=facecolor, 
-            edgecolor='black', linewidth=1.5, alpha=0.8
-        )
-        ax.add_patch(hex_patch)
-        
-        label = f"{hex_tile.resource}\n({hex_tile.number_token})"
-        ax.text(
-            x, y, label, ha='center', va='center', 
-            fontsize=9, weight='bold', color='black',
-            bbox=dict(boxstyle='round,pad=0.2', facecolor='white', alpha=0.6, edgecolor='none')
-        )
-        
-        coord_label = f"{q},{r},{s}"
-        ax.text(x, y - size*0.5, coord_label, ha='center', va='center', fontsize=7, color='gray')
-
-    ax.autoscale_view()
-    plt.axis('off')
-    plt.title("Generated Catan Board Layout", fontsize=16, weight='bold')
-    plt.show()
-
 @dataclass
 class Player:
     id: Optional[int] = None
@@ -203,8 +165,51 @@ class Player:
     cities: List[Tuple] = field(default_factory=list)
 
     victory_points: int = 0
-    
+
+class GameState:
+    def __init__(self, board, num_players=4):
+        self.board = board
+
+        self.players = [
+            Player(i)
+            for i in range(num_players)
+        ]
+
+        self.current_player = 0
+        self.turn_number = 0
+        self.dice_roll = None
+        self.game_over = False
+
+    @property
+    def active_player(self):
+        return self.players[self.current_player]
+
+    def give_resources(self, roll):
+        if roll == 7:
+            return
+        rolled_hexes = self.board.roll_index.get(roll, [])
+        for hex_tile in rolled_hexes:
+            if hex_tile.resource == "Desert":
+                continue
+            for v_key in hex_tile.vertices:
+                vertex = self.board.vertices.get(v_key)
+                if vertex and vertex.building_type is not None:
+                    owner = next((p for p in self.players if f"Player_{p.id}" == vertex.owner_id), None)
+                    if owner:
+                        income = 1 if vertex.building_type == "Settlement" else 2
+                        owner.resources[hex_tile.resource] += income
+                        print(f" -> Player_{owner.id} gained +{income} {hex_tile.resource}!")
+
+        
+        
 state = GameState(engine)
+
+#Making example settlements/cities
+all_vertex_keys = list(engine.vertices.keys())
+engine.vertices[all_vertex_keys[10]].building_type = "Settlement"
+engine.vertices[all_vertex_keys[10]].owner_id = 0
+engine.vertices[all_vertex_keys[25]].building_type = "City"
+engine.vertices[all_vertex_keys[25]].owner_id = 1
 
 def roll_dice():
     return random.randint(1, 6) + random.randint(1, 6)
@@ -213,6 +218,7 @@ def play_turn_with_visuals(state, ax, fig):
     player = state.active_player
     roll = roll_dice()
     state.dice_roll = roll
+    state.give_resources(roll)
 
     print(f"Turn {state.turn_number + 1}: {player.id} rolled {roll}")
 
@@ -253,13 +259,15 @@ def setup_catan_board_visuals(board: CatanBoard):
     
     color_map = {
         "Wood": "#4B3908", "Wheat": "#FFD700", "Wool": "#90EE90",
-        "Brick": "#B22222", "Ore": "#708090", "Desert": "#F4A460"
+        "Brick": "#B22222", "Ore": "#708090", "Desert": "#F4A460",
     }
+
     
     size = 1.0
     h_dist = size * np.sqrt(3)
     v_dist = size * 1.5
 
+    #Making hexes
     for coord, hex_tile in board.hexes.items():
         q, r, s = coord
         x = h_dist * (q + r / 2.0)
@@ -282,6 +290,18 @@ def setup_catan_board_visuals(board: CatanBoard):
         coord_label = f"{q},{r},{s}"
         ax.text(x, y - size*0.5, coord_label, ha='center', va='center', fontsize=7, color='gray')
 
+    player_colors = {0: "#FF1493", 1: "#1E90FF", 2: "#32CD32", 3: "#FF8C00"}
+    #Making vertexes
+    for coord, vertex in board.vertices.items():
+        if vertex.building_type is not None:
+            x, y = get_vertex_xy(coord, size)
+            color = player_colors.get(vertex.owner_id, "#FFFFFF")
+            marker = '^' if vertex.building_type == "Settlement" else 's'
+            msize = 12 if vertex.building_type == "Settlement" else 14
+            
+            ax.plot(x, y, marker=marker, color=color, markersize=msize, markeredgecolor='black', markeredgewidth=1.5, zorder=10)
+
+
     ax.autoscale_view()
     plt.axis('off')
     return fig, ax
@@ -293,27 +313,3 @@ for _ in range(100):
 
 plt.ioff()
 plt.show()
-
-class GameState:
-    def __init__(self, board, num_players=4):
-        self.board = board
-
-        self.players = [
-            Player(i)
-            for i in range(num_players)
-        ]
-
-        self.current_player = 0
-        self.turn_number = 0
-        self.dice_roll = None
-        self.game_over = False
-
-    @property
-    def active_player(self):
-        return self.players[self.current_player]
-
-    def dist_resources(self, roll: int):
-        if roll == 7:
-            return
-
-        rolled_hexes = self.board
