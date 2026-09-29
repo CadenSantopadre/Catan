@@ -16,8 +16,8 @@ class Vertex: #Vertexes are intersections between hexes
 
 @dataclass
 class Edge: #Edges are the connectors between vertices
-    coordinate: Tuple[str, str]            # Connects two vertex coordinate strings
-    owner_id: Optional[str] = None         # Player ID for roads
+    coordinate: Tuple[Tuple, Tuple]            # Connects two vertex coordinate strings
+    owner_id: Optional[int] = None         # Player ID for roads
 
 @dataclass
 class HexTile: #HexTiles are what everyting is against
@@ -57,6 +57,7 @@ class CatanBoard:
 
         return vertex_keys
 
+
     def register_hex(self, q:int,r:int,s:int, resource:str, token:int):
         hex_coord = (q,r,s)
 
@@ -65,6 +66,14 @@ class CatanBoard:
             if v_key not in self.vertices:
                 #If corner is NEW, create it
                 self.vertices[v_key] = Vertex(coordinate=v_key)
+
+        for i in range(6):
+            v1 = vertex_keys[i]
+            v2 = vertex_keys[(i+1) % 6]
+
+            edge_key = tuple(sorted([v1,v2]))
+            if edge_key not in self.edges:
+                self.edges[edge_key] = Edge(coordinate=edge_key)
 
         new_hex = HexTile(
             coordinate=hex_coord,
@@ -167,7 +176,7 @@ class Player:
     victory_points: int = 0
 
 class GameState:
-    def __init__(self, board, num_players=4):
+    def __init__(self, board, num_players=4): #Constructor
         self.board = board
 
         self.players = [
@@ -194,21 +203,85 @@ class GameState:
             for v_key in hex_tile.vertices:
                 vertex = self.board.vertices.get(v_key)
                 if vertex and vertex.building_type is not None:
-                    owner = next((p for p in self.players if f"Player_{p.id}" == vertex.owner_id), None)
+                    owner = next((p for p in self.players if p.id == vertex.owner_id), None)
                     if owner:
                         income = 1 if vertex.building_type == "Settlement" else 2
                         owner.resources[hex_tile.resource] += income
                         print(f" -> Player_{owner.id} gained +{income} {hex_tile.resource}!")
 
-        
-        
+    def get_actions(self):
+        player = self.active_player
+        actions = []
+
+        if(player.resources["Wood"] >= 1 and player.resources["Brick"] >= 1 and player.resources["Wheat"] >= 1 and player.resources["Wool"] >= 1):
+            for v_key, vertex in self.board.vertices.items():
+                if vertex.building_type is None:
+                    actions.append({"type": "build_settlement", "vertex_key": v_key})
+
+        if player.resources["Wheat"] >= 2 and player.resources["Ore"] >= 3:
+            for v_key, vertex in self.board.vertices.items():
+                if vertex.building_type == "Settlement" and vertex.owner_id == player.id:
+                    actions.append({"type": "build_city", "vertex_key": v_key})
+
+        if(player.resources["Wood"] >= 1 and player.resources["Brick"] >= 1):
+            for edge_key, edge in self.board.edges.items():
+                if edge.owner_id is None:
+                    v1, v2 = edge_key
+
+                    connected - False
+
+                    if (self.board.vertices[v1].owner_id == player.id or 
+                        self.board.vertices[v2].owner_id == player.id):
+                        connected = True
+                    if connected:
+                        actions.append({"type": "build_road", "edge_key": edge_key})
+
+    def execute_action(self, action: dict):
+        player = self.active_player
+        action_type = action.get("type")
+
+        if action_type == "build_settlement":
+            v_key = action["vertex_key"]
+            vertex = self.board.vertices[v_key]
+            
+            # 1. Update Board
+            vertex.building_type = "Settlement"
+            vertex.owner_id = player.id
+            
+            # 2. Deduct Cost
+            player.resources["Wood"] -= 1
+            player.resources["Brick"] -= 1
+            player.resources["Wheat"] -= 1
+            player.resources["Wool"] -= 1
+            print(f" -> Player {player.id} built a Settlement!")
+
+        elif action_type == "build_city":
+            v_key = action["vertex_key"]
+            vertex = self.board.vertices[v_key]
+            
+            vertex.building_type = "City"
+            
+            player.resources["Wheat"] -= 2
+            player.resources["Ore"] -= 3
+            print(f" -> Player {player.id} upgraded to a City!")
+
+        elif action_type == "build_road":
+            e_key = action["edge_key"]
+            edge = self.board.edges[e_key]
+            
+            edge.owner_id = player.id
+            player.resources["Wood"] -= 1
+            player.resources["Brick"] -= 1
+            print(f" -> Player {player.id} built a Road!")
+
+
 state = GameState(engine)
 
 #Making example settlements/cities
 all_vertex_keys = list(engine.vertices.keys())
 engine.vertices[all_vertex_keys[10]].building_type = "Settlement"
 engine.vertices[all_vertex_keys[10]].owner_id = 0
-engine.vertices[all_vertex_keys[25]].building_type = "City"
+engine.vertices[all_vertex_keys[25]].building_type = "Settlement"
 engine.vertices[all_vertex_keys[25]].owner_id = 1
 
 def roll_dice():
@@ -219,6 +292,7 @@ def play_turn_with_visuals(state, ax, fig):
     roll = roll_dice()
     state.dice_roll = roll
     state.give_resources(roll)
+    state.execute_action(state.get_actions())
 
     print(f"Turn {state.turn_number + 1}: {player.id} rolled {roll}")
 
