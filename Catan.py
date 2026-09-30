@@ -197,42 +197,49 @@ class Player:
 
     def eval_action(self, action, state):
         score = 0
+        
+        # 1. Base values for immediate builds
         if action["type"] == "build_settlement":
-            score += 15
+            score += 50  # Significantly increase settlement priority
             hex_numbers = state.board.get_numbers_for_vertex(action["vertex_key"])
             score += sum(DICE_PROBABILITY.get(num, 0) for num in hex_numbers)
 
         elif action["type"] == "build_city":
-            score += 30
-            hex_numbers = state.board.get_numbers_for_vertex(action["vertex_key"])
-            score += sum(DICE_PROBABILITY.get(num, 0) for num in hex_numbers)
-
+            score += 60
+            
         elif action["type"] == "build_road":
-            score += 5
+            score += 2 
+            
+        elif action["type"] == "pass":
+            score += 10
 
-        elif action["type"] == "maritime":
-            score +=1
+            res = self.resources
+            
+            settlement_combos = min(res["Wood"], res["Brick"], res["Wheat"], res["Wool"])
+            score += settlement_combos * 25
+            
+            city_combos = min(res["Ore"] // 3, res["Wheat"] // 2) if res["Ore"] >= 3 else 0
+            score += city_combos * 30
+            
+            total_cards = sum(res.values())
+            if total_cards > 7:
+                score -= (total_cards - 7) * 5
 
         return score
 
+
     def choose_action(self, state):
         actions = state.get_actions()
-        if not actions:
-            return None
-        
         if self.strat == "heuristic":
             scored_actions = [(self.eval_action(a, state), a) for a in actions]
             best_action = max(scored_actions, key=lambda item: item[0])[1]
             return best_action
         return random.choice(actions)
 
-            
-
 class GameState:
     def __init__(self, board, num_players=4): #Constructor
         self.board = board
-
-        strats = ["random", "heuristic", "heuristic", "random"]
+        strats = ["heuristic", "heuristic", "heuristic", "heuristic"]
 
         self.players = [
             Player(id=i, strat=strats[i % len(strats)])
@@ -268,10 +275,35 @@ class GameState:
         player = self.active_player
         actions = []
 
-        if(player.resources["Wood"] >= 1 and player.resources["Brick"] >= 1 and player.resources["Wheat"] >= 1 and player.resources["Wool"] >= 1):
+        if player.resources["Wood"] >= 1 and player.resources["Brick"] >= 1 and player.resources["Wheat"] >= 1 and player.resources["Wool"] >= 1:
             for v_key, vertex in self.board.vertices.items():
                 if vertex.building_type is None:
-                    actions.append({"type": "build_settlement", "vertex_key": v_key})
+                    
+                    distance_rule_passed = True
+                    connected_to_road = False
+
+                    # Scan all edges to evaluate this specific vertex (v_key)
+                    for edge_key, edge in self.board.edges.items():
+                        
+                        # Is this edge physically attached to our target vertex?
+                        if v_key in edge_key:
+                            
+                            # 1. CONNECTEDNESS: Does the player own a road on this attached edge?
+                            if edge.owner_id == player.id:
+                                connected_to_road = True
+
+                            # 2. DISTANCE CHECK: Get the vertex ID on the OTHER side of this edge
+                            neighbor_key = edge_key[1] if edge_key[0] == v_key else edge_key[0]
+                            neighbor_vertex = self.board.vertices[neighbor_key]
+                            
+                            # If that neighbor vertex has ANY building, distance rule fails
+                            if neighbor_vertex.building_type is not None:
+                                distance_rule_passed = False
+
+                    # A settlement can only be built if BOTH rules pass
+                    if distance_rule_passed and connected_to_road:
+                        actions.append({"type": "build_settlement", "vertex_key": v_key})
+
 
         if player.resources["Wheat"] >= 2 and player.resources["Ore"] >= 3:
             for v_key, vertex in self.board.vertices.items():
@@ -397,7 +429,7 @@ print(f"Successfully seeded {len(test_settlements)} test settlements onto the bo
 
 def roll_dice():
     return random.randint(1, 6) + random.randint(1, 6)
-def play_turn_with_visuals(state, ax, fig, road_artists):
+def play_turn_with_visuals(state, ax, fig, road_artists, building_artists):
     player = state.active_player
     roll = roll_dice()
     state.dice_roll = roll
@@ -417,6 +449,14 @@ def play_turn_with_visuals(state, ax, fig, road_artists):
         if edge.owner_id is not None:
             road_artists[edge_key].set_color(player_colors.get(edge.owner_id, "#000000"))
             road_artists[edge_key].set_visible(True)
+
+    for vertex_key, vertex in state.board.vertices.items():
+        if vertex.building_type is not None:
+            artist = building_artists[vertex_key]
+            artist.set_marker('^' if vertex.building_type == "Settlement" else 's')
+            artist.set_markersize(12 if vertex.building_type == "Settlement" else 14)
+            artist.set_color(player_colors.get(vertex.owner_id, "#000000"))
+            building_artists[vertex_key].set_visible(True)
 
     print(f"Turn {state.turn_number + 1}: {player.id} rolled {roll}")
 
@@ -492,17 +532,24 @@ def setup_catan_board_visuals(board: CatanBoard):
     player_colors = {
                 0: "#ff0000",
                 1: "#0077ff",
-                2: "#ffffff",
+                2: "#FDEC00",
                 3: "#b700ff"
             }
+    building_artists = {}
     for coord, vertex in board.vertices.items():
-        if vertex.building_type is not None:
-            x, y = get_vertex_xy(coord, size)
-            color = player_colors.get(vertex.owner_id, "#FFFFFF")
-            marker = '^' if vertex.building_type == "Settlement" else 's'
-            msize = 12 if vertex.building_type == "Settlement" else 14
-            
-            ax.plot(x, y, marker=marker, color=color, markersize=msize, markeredgecolor='black', markeredgewidth=1.5, zorder=10)
+        x, y = get_vertex_xy(coord, size)
+        building_type = vertex.building_type or "Settlement"
+        artist, = ax.plot(
+            x, y,
+            marker='^' if building_type == "Settlement" else 's',
+            color=player_colors.get(vertex.owner_id, "#FFFFFF"),
+            markersize=12 if building_type == "Settlement" else 14,
+            markeredgecolor='black',
+            markeredgewidth=1.5,
+            zorder=10,
+            visible=vertex.building_type is not None
+        )
+        building_artists[coord] = artist
 
         #Making roads
     road_artists = {}
@@ -519,15 +566,14 @@ def setup_catan_board_visuals(board: CatanBoard):
         )
         road_artists[edge_key] = line
 
-
     ax.autoscale_view()
     plt.axis('off')
-    return fig, ax, road_artists
+    return fig, ax, road_artists, building_artists
 
-fig, ax, road_artists = setup_catan_board_visuals(engine)
+fig, ax, road_artists, building_artists = setup_catan_board_visuals(engine)
  
 for _ in range(100):
-    play_turn_with_visuals(state, ax, fig, road_artists)
+    play_turn_with_visuals(state, ax, fig, road_artists, building_artists)
 
 plt.ioff()
 plt.show()
