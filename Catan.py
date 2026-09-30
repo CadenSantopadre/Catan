@@ -228,13 +228,42 @@ class GameState:
                 if edge.owner_id is None:
                     v1, v2 = edge_key
 
-                    connected - False
+                    connected = False
 
-                    if (self.board.vertices[v1].owner_id == player.id or 
-                        self.board.vertices[v2].owner_id == player.id):
+                    if self.board.vertices[v1].owner_id == player.id or self.board.vertices[v2].owner_id == player.id:
                         connected = True
+
+                    else:
+                        for other_key, other_edge in self.board.edges.items():
+                            if other_edge.owner_id == player.id:
+                                if v1 in other_key or v2 in other_key:
+                                    connected = True
+                                    break
                     if connected:
                         actions.append({"type": "build_road", "edge_key": edge_key})
+        if(player.resources["Wood"] >= 4):
+            actions.append({"type": "maritime", "give": "Wood", "get": "Wheat"})
+            actions.append({"type": "maritime", "give": "Wood", "get": "Wool"})
+            actions.append({"type": "maritime", "give": "Wood", "get": "Ore"})
+
+        if(player.resources["Wheat" >= 4]):            
+            actions.append({"type": "maritime", "give": "Wheat", "get": "Wood"})
+            actions.append({"type": "maritime", "give": "Wheat", "get": "Wool"})
+            actions.append({"type": "maritime", "give": "Wheat", "get": "Ore"})
+
+        if(player.resources["Wool" >= 4]):            
+            actions.append({"type": "maritime", "give": "Wool", "get": "Wood"})
+            actions.append({"type": "maritime", "give": "Wool", "get": "Wheat"})
+            actions.append({"type": "maritime", "give": "Wool", "get": "Ore"})
+            
+        if(player.resources["Ore" >= 4]):            
+            actions.append({"type": "maritime", "give": "Ore", "get": "Wood"})
+            actions.append({"type": "maritime", "give": "Ore", "get": "Wool"})
+            actions.append({"type": "maritime", "give": "Ore", "get": "Wheat"})
+
+        actions.append({"type": "pass"})
+
+        return actions
 
     def execute_action(self, action: dict):
         player = self.active_player
@@ -253,7 +282,7 @@ class GameState:
             player.resources["Brick"] -= 1
             player.resources["Wheat"] -= 1
             player.resources["Wool"] -= 1
-            print(f" -> Player {player.id} built a Settlement!")
+            print(f" --> Player {player.id} built a Settlement!")
 
         elif action_type == "build_city":
             v_key = action["vertex_key"]
@@ -263,7 +292,7 @@ class GameState:
             
             player.resources["Wheat"] -= 2
             player.resources["Ore"] -= 3
-            print(f" -> Player {player.id} upgraded to a City!")
+            print(f" --> Player {player.id} upgraded to a City!")
 
         elif action_type == "build_road":
             e_key = action["edge_key"]
@@ -272,27 +301,66 @@ class GameState:
             edge.owner_id = player.id
             player.resources["Wood"] -= 1
             player.resources["Brick"] -= 1
-            print(f" -> Player {player.id} built a Road!")
+            print(f" --> Player {player.id} built a Road!")
 
+        elif action_type == "maritime":
+            player.resources[action.get("give")] -= 4
+            player.resources[action.get("get")] += 1
 
-state = GameState(engine)
+        elif action_type == "pass":
+            print(f" --> Player {player.id} passed.")
 
 #Making example settlements/cities
+# Create the game state
+state = GameState(engine, num_players=4)
 all_vertex_keys = list(engine.vertices.keys())
-engine.vertices[all_vertex_keys[10]].building_type = "Settlement"
-engine.vertices[all_vertex_keys[10]].owner_id = 0
-engine.vertices[all_vertex_keys[25]].building_type = "Settlement"
-engine.vertices[all_vertex_keys[25]].owner_id = 1
+
+# Define a mapping of vertex indices to player IDs for testing resource generation
+test_settlements = {
+    10: 0,  # Player 0 Settlement
+    15: 0,  # Player 0 Second Settlement
+    25: 1,  # Player 1 Settlement
+    32: 1,  # Player 1 Second Settlement
+    40: 2,  # Player 2 Settlement
+    45: 2,  # Player 2 Second Settlement
+    50: 3,  # Player 3 Settlement
+    52: 3,  # Player 3 Second Settlement
+}
+
+# Seed the board with our test settlements
+for vertex_index, player_id in test_settlements.items():
+    v_key = all_vertex_keys[vertex_index]
+    engine.vertices[v_key].building_type = "Settlement"
+    engine.vertices[v_key].owner_id = player_id
+    
+    # Also log it inside the player profile instances so their inventory state aligns
+    state.players[player_id].settlements.append(v_key)
+
+print(f"Successfully seeded {len(test_settlements)} test settlements onto the board layout.")
+
 
 def roll_dice():
     return random.randint(1, 6) + random.randint(1, 6)
-
-def play_turn_with_visuals(state, ax, fig):
+def play_turn_with_visuals(state, ax, fig, road_artists):
     player = state.active_player
     roll = roll_dice()
     state.dice_roll = roll
     state.give_resources(roll)
-    state.execute_action(state.get_actions())
+    legal_moves = state.get_actions()
+    chosen_move = random.choice(legal_moves)
+    state.execute_action(chosen_move)
+
+    player_colors = {
+            0: "#ff0000",
+            1: "#0077ff",
+            2: "#ffffff",
+            3: "#b700ff"
+        }
+
+    for edge_key, edge in state.board.edges.items():
+        if edge.owner_id is not None:
+            road_artists[edge_key].set_color(player_colors.get(edge.owner_id, "#000000"))
+            road_artists[edge_key].set_visible(True)
 
     print(f"Turn {state.turn_number + 1}: {player.id} rolled {roll}")
 
@@ -364,8 +432,13 @@ def setup_catan_board_visuals(board: CatanBoard):
         coord_label = f"{q},{r},{s}"
         ax.text(x, y - size*0.5, coord_label, ha='center', va='center', fontsize=7, color='gray')
 
-    player_colors = {0: "#FF1493", 1: "#1E90FF", 2: "#32CD32", 3: "#FF8C00"}
     #Making vertexes
+    player_colors = {
+                0: "#ff0000",
+                1: "#0077ff",
+                2: "#ffffff",
+                3: "#b700ff"
+            }
     for coord, vertex in board.vertices.items():
         if vertex.building_type is not None:
             x, y = get_vertex_xy(coord, size)
@@ -375,15 +448,30 @@ def setup_catan_board_visuals(board: CatanBoard):
             
             ax.plot(x, y, marker=marker, color=color, markersize=msize, markeredgecolor='black', markeredgewidth=1.5, zorder=10)
 
+        #Making roads
+    road_artists = {}
+    for edge_key, edge in board.edges.items():
+        v1, v2 = edge_key
+        x1, y1 = get_vertex_xy(v1, size)
+        x2, y2 = get_vertex_xy(v2, size)
+        line, = ax.plot(
+            [x1, x2], [y1, y2],
+            color=player_colors.get(edge.owner_id, "#000000"),
+            linewidth=5,
+            zorder=15,
+            visible=edge.owner_id is not None
+        )
+        road_artists[edge_key] = line
+
 
     ax.autoscale_view()
     plt.axis('off')
-    return fig, ax
+    return fig, ax, road_artists
 
-fig, ax = setup_catan_board_visuals(engine)
+fig, ax, road_artists = setup_catan_board_visuals(engine)
  
 for _ in range(100):
-    play_turn_with_visuals(state, ax, fig)
+    play_turn_with_visuals(state, ax, fig, road_artists)
 
 plt.ioff()
 plt.show()
