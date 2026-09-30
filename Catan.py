@@ -85,6 +85,23 @@ class CatanBoard:
         if token in self.roll_index:
             self.roll_index[token].append(new_hex)
 
+    def get_numbers_for_vertex(self, vertex_coords: Tuple) -> List[int]:
+        numbers = []
+        
+        # vertex_coords is literally a tuple containing the 3 surrounding hex centers
+        for hex_coord in vertex_coords:
+            # Check if the hex exists in our board dictionary (handles outer edges/water)
+            if hex_coord in self.hexes:
+                hex_tile = self.hexes[hex_coord]
+                
+                # Make sure it's a valid resource tile with a number (skips Desert/None)
+                if hex_tile.number_token is not None and hex_tile.number_token > 0:
+                    numbers.append(hex_tile.number_token)
+                    
+        return numbers
+
+
+
 def get_vertex_xy(vertex_key, size=1.0):
     #Gives the x y value of a vertex
     h_dist = size * np.sqrt(3)
@@ -94,6 +111,8 @@ def get_vertex_xy(vertex_key, size=1.0):
         xs.append(h_dist * (q + r / 2.0))
         ys.append(v_dist * r)
     return np.mean(xs), np.mean(ys)
+
+
 
 engine = CatanBoard()
 terrain = ["Wood",
@@ -153,10 +172,11 @@ for q in range(-2, 3):
 
 print(f"Total Hexes Generated: {len(engine.hexes)}")
 print(f"Total Unique Vertices Registered: {len(engine.vertices)}")
-
+DICE_PROBABILITY = {2: 1, 3: 2, 4: 3, 5: 4, 6: 5, 7: 6, 8: 5, 9: 4, 10: 3, 11: 2, 12: 1}
 @dataclass
 class Player:
     id: Optional[int] = None
+    strat: str = None
 
     resources: Dict[str, int] = field(default_factory=lambda: { 
         #We need field(defualt_factory) because
@@ -175,12 +195,47 @@ class Player:
 
     victory_points: int = 0
 
+    def eval_action(self, action, state):
+        score = 0
+        if action["type"] == "build_settlement":
+            score += 15
+            hex_numbers = state.board.get_numbers_for_vertex(action["vertex_key"])
+            score += sum(DICE_PROBABILITY.get(num, 0) for num in hex_numbers)
+
+        elif action["type"] == "build_city":
+            score += 30
+            hex_numbers = state.board.get_numbers_for_vertex(action["vertex_key"])
+            score += sum(DICE_PROBABILITY.get(num, 0) for num in hex_numbers)
+
+        elif action["type"] == "build_road":
+            score += 5
+
+        elif action["type"] == "maritime":
+            score +=1
+
+        return score
+
+    def choose_action(self, state):
+        actions = state.get_actions()
+        if not actions:
+            return None
+        
+        if self.strat == "heuristic":
+            scored_actions = [(self.eval_action(a, state), a) for a in actions]
+            best_action = max(scored_actions, key=lambda item: item[0])[1]
+            return best_action
+        return random.choice(actions)
+
+            
+
 class GameState:
     def __init__(self, board, num_players=4): #Constructor
         self.board = board
 
+        strats = ["random", "heuristic", "heuristic", "random"]
+
         self.players = [
-            Player(i)
+            Player(id=i, strat=strats[i % len(strats)])
             for i in range(num_players)
         ]
 
@@ -246,17 +301,17 @@ class GameState:
             actions.append({"type": "maritime", "give": "Wood", "get": "Wool"})
             actions.append({"type": "maritime", "give": "Wood", "get": "Ore"})
 
-        if(player.resources["Wheat" >= 4]):            
+        if(player.resources["Wheat"] >= 4):            
             actions.append({"type": "maritime", "give": "Wheat", "get": "Wood"})
             actions.append({"type": "maritime", "give": "Wheat", "get": "Wool"})
             actions.append({"type": "maritime", "give": "Wheat", "get": "Ore"})
 
-        if(player.resources["Wool" >= 4]):            
+        if(player.resources["Wool"] >= 4):            
             actions.append({"type": "maritime", "give": "Wool", "get": "Wood"})
             actions.append({"type": "maritime", "give": "Wool", "get": "Wheat"})
             actions.append({"type": "maritime", "give": "Wool", "get": "Ore"})
             
-        if(player.resources["Ore" >= 4]):            
+        if(player.resources["Ore"] >= 4):            
             actions.append({"type": "maritime", "give": "Ore", "get": "Wood"})
             actions.append({"type": "maritime", "give": "Ore", "get": "Wool"})
             actions.append({"type": "maritime", "give": "Ore", "get": "Wheat"})
@@ -306,6 +361,7 @@ class GameState:
         elif action_type == "maritime":
             player.resources[action.get("give")] -= 4
             player.resources[action.get("get")] += 1
+            print(f"--------------> Player {player.id} maritimed {action.get("give")} for {action.get("get")}")
 
         elif action_type == "pass":
             print(f" --> Player {player.id} passed.")
@@ -347,13 +403,13 @@ def play_turn_with_visuals(state, ax, fig, road_artists):
     state.dice_roll = roll
     state.give_resources(roll)
     legal_moves = state.get_actions()
-    chosen_move = random.choice(legal_moves)
+    chosen_move = player.choose_action(state)
     state.execute_action(chosen_move)
 
     player_colors = {
             0: "#ff0000",
             1: "#0077ff",
-            2: "#ffffff",
+            2: "#FDEC00",
             3: "#b700ff"
         }
 
