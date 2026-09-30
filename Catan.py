@@ -4,8 +4,17 @@ from typing import Dict, List, Tuple, Optional
 import matplotlib.pyplot as plt
 import numpy as np
 from matplotlib.patches import RegularPolygon
-
 plt.ion()
+
+DICE_PROBABILITY = {2: 1, 3: 2, 4: 3, 5: 4, 6: 5, 7: 6, 8: 5, 9: 4, 10: 3, 11: 2, 12: 1}
+SETTLEMENT_URGENCY = 1.5 #How urgent it is to construct a settlement
+ORE_CITY_URGENCY = 2.0
+WHEAT_CITY_URGENCY = 1.0
+OVER_URGENCY = 0.5
+RANDOM_TRADE_BORDER = 0.5
+ENDGAME_TRADE_SUB = 2.0
+WINNING_TRADE_SUB = 0.5
+
 
 @dataclass
 class Vertex: #Vertexes are intersections between hexes
@@ -172,7 +181,7 @@ for q in range(-2, 3):
 
 print(f"Total Hexes Generated: {len(engine.hexes)}")
 print(f"Total Unique Vertices Registered: {len(engine.vertices)}")
-DICE_PROBABILITY = {2: 1, 3: 2, 4: 3, 5: 4, 6: 5, 7: 6, 8: 5, 9: 4, 10: 3, 11: 2, 12: 1}
+
 @dataclass
 class Player:
     id: Optional[int] = None
@@ -195,6 +204,71 @@ class Player:
 
     victory_points: int = 0
 
+    def get_res_urgency(self) -> Dict[str, float]:
+        #how much do we need a reousrce?
+        res = self.resources
+
+        urgency = {k: 0.0 for k in res.keys()} #Base nothing value
+
+        for r in ["Wood", "Brick", "Wheat", "Wool",]:
+            if res[r] == 0:
+                urgency[r] += SETTLEMENT_URGENCY               #EXPERIMENTAL VALUE FOR SETTLEMENT URGENCY
+
+        if res["Ore"] < 3:
+            urgency["Ore"] += ORE_CITY_URGENCY
+        if res["Wheat"] < 2:
+            urgency["Wheat"] += WHEAT_CITY_URGENCY
+
+        for r, amount in res.items():
+            if amount > 4:
+                urgency[r] -= OVER_URGENCY
+
+        return urgency
+
+    def propose_trade(self, state, other_player) -> Optional[Dict]:
+        if self.strat != "heuristic":
+            return None
+
+        urgency = self.get_res_urgency()
+
+        #find what we WANT(most urgent)
+        most_needed = max(urgency, key=urgency.get)
+        #Compared to what we can GIVE(least urgent)
+        most_abundant = min(urgency, key=urgency.get)
+
+        if self.resources[most_abundant] > 1 and urgency[most_needed] > 1.0:
+            return {
+                "give": {most_abundant: 1},
+                "receive": {most_needed: 1}
+            }
+        return None
+
+    def evaluate_trade(self, trade: Dict, state) -> bool:
+        if self.strat != "heuristic":
+            return random.random() < RANDOM_TRADE_BORDER
+
+        #If we cna't afford it, no deal
+        for res, amount in trade["receive"].items():
+            if self.resources[res] < amount:
+                return False
+
+            urgency = self.get_res_urgency()
+
+            value_gained = sum(urgency[r] * amount for r, amount in trade["give"].items())
+            value_lost = sum(urgency[r] * amoutn for r, amoutn in trade["receive"].items())
+
+            trade_score = value_gained - value_lost
+
+            if self.strat == "heuristic2":
+                proposing_player = state.active_player
+                if proposing_player.victory_points >= 8:
+                    trade_score -= ENDGAME_TRADE_SUB  # Tighten restrictions heavily near endgame
+                elif proposing_player.victory_points > self.victory_points:
+                    trade_score -= WINNING_TRADE_SUB  # Slight penalty if they are beating us
+
+        # Accept if the trade benefits us on net value
+        return trade_score > 0.1
+        
     def eval_action(self, action, state):
         score = 0
         
@@ -234,8 +308,9 @@ class Player:
             scored_actions = [(self.eval_action(a, state), a) for a in actions]
             best_action = max(scored_actions, key=lambda item: item[0])[1]
             return best_action
+        #Else return random
         return random.choice(actions)
-
+settlements = {}
 class GameState:
     def __init__(self, board, num_players=4): #Constructor
         self.board = board
@@ -250,6 +325,13 @@ class GameState:
         self.turn_number = 0
         self.dice_roll = None
         self.game_over = False
+        possible_vertices = np.arange(0,53)
+        for p in range(num_players):
+            ran_vertex = np.random.choice(possible_vertices)
+            settlements[ran_vertex] = p
+        for p in range(num_players):
+                    ran_vertex = np.random.choice(possible_vertices)
+                    settlements[ran_vertex] = p
 
     @property
     def active_player(self):
@@ -271,6 +353,17 @@ class GameState:
                         owner.resources[hex_tile.resource] += income
                         print(f" -> Player_{owner.id} gained +{income} {hex_tile.resource}!")
 
+    def execute_trade(self, proposer, receiver, trade):
+        for res, amt in trade["give"].items():
+            proposer.resources[res] -= amt
+            receiver.resources[res] += amt
+
+        for res, amt in trade["receive"].items():
+            receiver.resources[res] -= amt
+            proposer.resources[res] += amt
+
+        print(f"TRADE: Player {proposer.id} traded {amt} {res} with Player {receiver.id}")
+
     def get_actions(self):
         player = self.active_player
         actions = []
@@ -282,25 +375,20 @@ class GameState:
                     distance_rule_passed = True
                     connected_to_road = False
 
-                    # Scan all edges to evaluate this specific vertex (v_key)
+                    #Scan all edges to evaluate this specific vertex (v_key)
                     for edge_key, edge in self.board.edges.items():
                         
-                        # Is this edge physically attached to our target vertex?
                         if v_key in edge_key:
                             
-                            # 1. CONNECTEDNESS: Does the player own a road on this attached edge?
                             if edge.owner_id == player.id:
                                 connected_to_road = True
 
-                            # 2. DISTANCE CHECK: Get the vertex ID on the OTHER side of this edge
                             neighbor_key = edge_key[1] if edge_key[0] == v_key else edge_key[0]
                             neighbor_vertex = self.board.vertices[neighbor_key]
                             
-                            # If that neighbor vertex has ANY building, distance rule fails
                             if neighbor_vertex.building_type is not None:
                                 distance_rule_passed = False
 
-                    # A settlement can only be built if BOTH rules pass
                     if distance_rule_passed and connected_to_road:
                         actions.append({"type": "build_settlement", "vertex_key": v_key})
 
@@ -369,7 +457,7 @@ class GameState:
             player.resources["Brick"] -= 1
             player.resources["Wheat"] -= 1
             player.resources["Wool"] -= 1
-            print(f" --> Player {player.id} built a Settlement!")
+            print(f"        SETTLEMENT: Player {player.id} built a Settlement!")
 
         elif action_type == "build_city":
             v_key = action["vertex_key"]
@@ -379,7 +467,7 @@ class GameState:
             
             player.resources["Wheat"] -= 2
             player.resources["Ore"] -= 3
-            print(f" --> Player {player.id} upgraded to a City!")
+            print(f"        CITY: Player {player.id} upgraded to a City!")
 
         elif action_type == "build_road":
             e_key = action["edge_key"]
@@ -388,35 +476,24 @@ class GameState:
             edge.owner_id = player.id
             player.resources["Wood"] -= 1
             player.resources["Brick"] -= 1
-            print(f" --> Player {player.id} built a Road!")
+            print(f"        ROAD: Player {player.id} built a Road!")
 
         elif action_type == "maritime":
             player.resources[action.get("give")] -= 4
             player.resources[action.get("get")] += 1
-            print(f"--------------> Player {player.id} maritimed {action.get("give")} for {action.get("get")}")
+            print(f"MARITIME Player {player.id} maritimed {action.get("give")} for {action.get("get")}")
 
         elif action_type == "pass":
-            print(f" --> Player {player.id} passed.")
+            print(f"Player {player.id} passed.")
 
 #Making example settlements/cities
 # Create the game state
 state = GameState(engine, num_players=4)
 all_vertex_keys = list(engine.vertices.keys())
 
-# Define a mapping of vertex indices to player IDs for testing resource generation
-test_settlements = {
-    10: 0,  # Player 0 Settlement
-    15: 0,  # Player 0 Second Settlement
-    25: 1,  # Player 1 Settlement
-    32: 1,  # Player 1 Second Settlement
-    40: 2,  # Player 2 Settlement
-    45: 2,  # Player 2 Second Settlement
-    50: 3,  # Player 3 Settlement
-    52: 3,  # Player 3 Second Settlement
-}
 
 # Seed the board with our test settlements
-for vertex_index, player_id in test_settlements.items():
+for vertex_index, player_id in settlements.items():
     v_key = all_vertex_keys[vertex_index]
     engine.vertices[v_key].building_type = "Settlement"
     engine.vertices[v_key].owner_id = player_id
@@ -424,7 +501,7 @@ for vertex_index, player_id in test_settlements.items():
     # Also log it inside the player profile instances so their inventory state aligns
     state.players[player_id].settlements.append(v_key)
 
-print(f"Successfully seeded {len(test_settlements)} test settlements onto the board layout.")
+print(f"Successfully seeded {len(settlements)} test settlements onto the board layout.")
 
 
 def roll_dice():
@@ -434,6 +511,14 @@ def play_turn_with_visuals(state, ax, fig, road_artists, building_artists):
     roll = roll_dice()
     state.dice_roll = roll
     state.give_resources(roll)
+
+    for other_player in state.players:
+        if other_player.id != player.id:
+            trade_proposal = player.propose_trade(state, other_player)
+            if trade_proposal and other_player.evaluate_trade(trade_proposal, state):
+                state.execute_trade(player, other_player, trade_proposal)
+                break
+
     legal_moves = state.get_actions()
     chosen_move = player.choose_action(state)
     state.execute_action(chosen_move)
