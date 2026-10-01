@@ -312,6 +312,25 @@ class Player:
             return best_action
         #Else return random
         return random.choice(actions)
+
+    def discard_player_resources(self, cards_discard: int, bank: Dict[str, int]):
+        
+        for _ in range(cards_discard):
+            urgency = self.get_res_urgency()
+            
+            available_urgencies = {
+                res: score for res, score in urgency.items() 
+                if self.resources[res] > 0
+            }
+            
+            if not available_urgencies:
+                break
+
+            least_urgent_res = min(available_urgencies, key=available_urgencies.get)
+            
+            self.resources[least_urgent_res] -= 1
+            bank[least_urgent_res] += 1
+
     
 class GameState:
     def __init__(self, board, num_players=4): #Constructor
@@ -371,10 +390,11 @@ class GameState:
             self.history["hand_size"][p.id].append(
                 sum(p.resources.values())
             )
-            for resource in self.bank:
-                self.history["bank"][resource].append(
-                    self.bank[resource]
-                )
+
+        for resource in self.bank:
+            self.history["bank"][resource].append(
+                self.bank[resource]
+            )
 
     @property
     def active_player(self):
@@ -386,7 +406,13 @@ class GameState:
 
     def give_resources(self, roll):
         if roll == 7:
-            return
+            for player in self.players:
+                cards = sum(player.resources.values())
+
+                if cards > 7:
+                    cards_discard = cards // 2
+
+                    player.discard_player_resources(cards_discard, self.bank)
         rolled_hexes = self.board.roll_index.get(roll, [])
         for hex_tile in rolled_hexes:
             if hex_tile.resource == "Desert":
@@ -397,10 +423,7 @@ class GameState:
                     owner = next((p for p in self.players if p.id == vertex.owner_id), None)
                     if owner:
                         income = 1 if vertex.building_type == "Settlement" else 2
-                        if(self.bank.get(hex_tile.resource) < 1):
-                            income = 0
-                        if(self.bank.get(hex_tile.resource) < 2):
-                            income = 1
+                        income = min(income, self.bank[hex_tile.resource])
                         owner.resources[hex_tile.resource] += income
                         self.bank[hex_tile.resource] -= income
                         print(f" -> Player_{owner.id} gained +{income} {hex_tile.resource}!")
@@ -515,6 +538,11 @@ class GameState:
             player.resources["Brick"] -= 1
             player.resources["Wheat"] -= 1
             player.resources["Wool"] -= 1
+            self.bank["Wood"] += 1
+            self.bank["Brick"] += 1
+            self.bank["Wheat"] += 1
+            self.bank["Wool"] += 1
+                        
             print(f"        SETTLEMENT: Player {player.id} built a Settlement!")
             player.settlements.append(v_key)
             player.victory_points+=1
@@ -527,6 +555,8 @@ class GameState:
             
             player.resources["Wheat"] -= 2
             player.resources["Ore"] -= 3
+            self.bank["Wheat"] += 2
+            self.bank["Ore"] += 3
             print(f"        CITY: Player {player.id} upgraded to a City!")
             player.settlements.remove(v_key)
             player.cities.append(v_key)
@@ -539,6 +569,8 @@ class GameState:
             edge.owner_id = player.id
             player.resources["Wood"] -= 1
             player.resources["Brick"] -= 1
+            self.bank["Wood"] += 1
+            self.bank["Brick"] += 1
             print(f"        ROAD: Player {player.id} built a Road!")
 
         elif action_type == "maritime":
@@ -815,22 +847,25 @@ def plot_bank(state):
 
 def plot_scarcity(state):
     turns = state.history["turn"]
-    plt.figure(figsize=(10,5))
+    plt.figure(figsize=(10, 5))
 
     for resource in state.history["bank"]:
+        scarcity_history = [1 - (bank_val / 19) for bank_val in state.history["bank"][resource]]
+        
         plt.plot(
             turns,
-            (1- state.bank[resource] / 19),
+            scarcity_history,
             label=resource
         )
     plt.axhline(0, linestyle="--")
     
     plt.xlabel("Turn")
-    plt.ylabel("Scarcity (1- Bank / 19)")
+    plt.ylabel("Scarcity (1 - Bank / 19)")
     plt.title("Scarcity over time")
     plt.legend()
     plt.grid(alpha=0.3)
     plt.show()
+
     
 
 plot_resources(state, 0)
