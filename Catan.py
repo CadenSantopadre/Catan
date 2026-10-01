@@ -347,10 +347,10 @@ class GameState:
         self.game_over = False
 
         self.bank = {
-            "Wood": 19,
-            "Brick": 19,
-            "Wheat": 19,
-            "Wool": 19,
+            "Wood": 11,#EAch player starts with these remember
+            "Brick": 11,
+            "Wheat": 11,
+            "Wool": 11,
             "Ore": 19
         }
 
@@ -497,26 +497,15 @@ class GameState:
                                     break
                     if connected:
                         actions.append({"type": "build_road", "edge_key": edge_key})
-        if(player.resources["Wood"] >= 4):
-            actions.append({"type": "maritime", "give": "Wood", "get": "Wheat"})
-            actions.append({"type": "maritime", "give": "Wood", "get": "Wool"})
-            actions.append({"type": "maritime", "give": "Wood", "get": "Ore"})
 
-        if(player.resources["Wheat"] >= 4):            
-            actions.append({"type": "maritime", "give": "Wheat", "get": "Wood"})
-            actions.append({"type": "maritime", "give": "Wheat", "get": "Wool"})
-            actions.append({"type": "maritime", "give": "Wheat", "get": "Ore"})
-
-        if(player.resources["Wool"] >= 4):            
-            actions.append({"type": "maritime", "give": "Wool", "get": "Wood"})
-            actions.append({"type": "maritime", "give": "Wool", "get": "Wheat"})
-            actions.append({"type": "maritime", "give": "Wool", "get": "Ore"})
-            
-        if(player.resources["Ore"] >= 4):            
-            actions.append({"type": "maritime", "give": "Ore", "get": "Wood"})
-            actions.append({"type": "maritime", "give": "Ore", "get": "Wool"})
-            actions.append({"type": "maritime", "give": "Ore", "get": "Wheat"})
-
+        if player.resources["Wood"] >= 4:
+            for get_resource in ["Wheat", "Wool", "Ore"]:
+                if self.bank[get_resource] > 0:
+                    actions.append({
+                        "type": "maritime",
+                        "give": "Wood",
+                        "get": get_resource
+                    })
         actions.append({"type": "pass"})
 
         return actions
@@ -575,12 +564,14 @@ class GameState:
 
         elif action_type == "maritime":
             player.resources[action.get("give")] -= 4
+            self.bank[action.get("give")] += 4
             player.resources[action.get("get")] += 1
+            self.bank[action.get("get")] -= 1
             print(f"MARITIME Player {player.id} maritimed {action.get("give")} for {action.get("get")}")
 
         elif action_type == "pass":
             print(f"Player {player.id} passed.")
-
+            
 #Making example settlements/cities
 # Create the game state
 state = GameState(engine, num_players=4)
@@ -630,7 +621,7 @@ def play_turn_with_visuals(state, ax, fig, road_artists, building_artists):
 
     if(state.turn_number > 9):
         print(f"Turn {state.turn_number + 1}: {player.id} rolled {roll}")
-
+        
     turn_highlights = []
 
     size = 1.0
@@ -655,7 +646,7 @@ def play_turn_with_visuals(state, ax, fig, road_artists, building_artists):
         ax.set_title(f"Turn {state.turn_number + 1} | {player.id} rolled: {roll}", fontsize=16, weight='bold')
     
     fig.canvas.draw_idle()
-    plt.pause(0.1)
+    plt.pause(0.01)
 
     for patch in turn_highlights:
         patch.remove()
