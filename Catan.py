@@ -191,10 +191,10 @@ class Player:
         #We need field(defualt_factory) because
         #Every time a nwe player is created, call the
         #list function to give them a fresh, empty list
-        "Wood": 0,
-        "Brick": 0,
-        "Wheat": 0,
-        "Wool": 0,
+        "Wood": 2, #Give them this to create two settlements at the start
+        "Brick": 2,
+        "Wheat": 2,
+        "Wool": 2,
         "Ore": 0
     })
 
@@ -310,7 +310,7 @@ class Player:
             return best_action
         #Else return random
         return random.choice(actions)
-settlements = {}
+    
 class GameState:
     def __init__(self, board, num_players=4): #Constructor
         self.board = board
@@ -325,13 +325,6 @@ class GameState:
         self.turn_number = 0
         self.dice_roll = None
         self.game_over = False
-        possible_vertices = np.arange(0,53)
-        for p in range(num_players):
-            ran_vertex = np.random.choice(possible_vertices)
-            settlements[ran_vertex] = p
-        for p in range(num_players):
-                    ran_vertex = np.random.choice(possible_vertices)
-                    settlements[ran_vertex] = p
 
     @property
     def active_player(self):
@@ -367,8 +360,11 @@ class GameState:
     def get_actions(self):
         player = self.active_player
         actions = []
-
+        firstfew = False
+        if(len(player.settlements) + len(player.cities) < 2):
+            firstfew = True
         if player.resources["Wood"] >= 1 and player.resources["Brick"] >= 1 and player.resources["Wheat"] >= 1 and player.resources["Wool"] >= 1:
+            
             for v_key, vertex in self.board.vertices.items():
                 if vertex.building_type is None:
                     
@@ -389,6 +385,9 @@ class GameState:
                             if neighbor_vertex.building_type is not None:
                                 distance_rule_passed = False
 
+                    if firstfew:
+                        connected_to_road = True
+                        
                     if distance_rule_passed and connected_to_road:
                         actions.append({"type": "build_settlement", "vertex_key": v_key})
 
@@ -458,6 +457,8 @@ class GameState:
             player.resources["Wheat"] -= 1
             player.resources["Wool"] -= 1
             print(f"        SETTLEMENT: Player {player.id} built a Settlement!")
+            player.settlements.append(v_key)
+            player.victory_points+=1
 
         elif action_type == "build_city":
             v_key = action["vertex_key"]
@@ -468,6 +469,9 @@ class GameState:
             player.resources["Wheat"] -= 2
             player.resources["Ore"] -= 3
             print(f"        CITY: Player {player.id} upgraded to a City!")
+            player.settlements.remove(v_key)
+            player.cities.append(v_key)
+            player.victory_points+=1
 
         elif action_type == "build_road":
             e_key = action["edge_key"]
@@ -492,25 +496,14 @@ state = GameState(engine, num_players=4)
 all_vertex_keys = list(engine.vertices.keys())
 
 
-# Seed the board with our test settlements
-for vertex_index, player_id in settlements.items():
-    v_key = all_vertex_keys[vertex_index]
-    engine.vertices[v_key].building_type = "Settlement"
-    engine.vertices[v_key].owner_id = player_id
-    
-    # Also log it inside the player profile instances so their inventory state aligns
-    state.players[player_id].settlements.append(v_key)
-
-print(f"Successfully seeded {len(settlements)} test settlements onto the board layout.")
-
-
 def roll_dice():
     return random.randint(1, 6) + random.randint(1, 6)
 def play_turn_with_visuals(state, ax, fig, road_artists, building_artists):
     player = state.active_player
-    roll = roll_dice()
-    state.dice_roll = roll
-    state.give_resources(roll)
+    if(state.turn_number > 9):
+        roll = roll_dice()
+        state.dice_roll = roll
+        state.give_resources(roll)
 
     for other_player in state.players:
         if other_player.id != player.id:
@@ -543,7 +536,8 @@ def play_turn_with_visuals(state, ax, fig, road_artists, building_artists):
             artist.set_color(player_colors.get(vertex.owner_id, "#000000"))
             building_artists[vertex_key].set_visible(True)
 
-    print(f"Turn {state.turn_number + 1}: {player.id} rolled {roll}")
+    if(state.turn_number > 9):
+        print(f"Turn {state.turn_number + 1}: {player.id} rolled {roll}")
 
     turn_highlights = []
 
@@ -551,21 +545,22 @@ def play_turn_with_visuals(state, ax, fig, road_artists, building_artists):
     h_dist = size * np.sqrt(3)
     v_dist = size * 1.5
 
-    rolled_hexes = state.board.roll_index.get(roll, [])
-    
-    for hex_tile in rolled_hexes:
-        q, r, s = hex_tile.coordinate
-        x = h_dist * (q + r / 2.0)
-        y = v_dist * r
-        
-        highlight = plt.Circle(
-            (x, y), radius=0.25, color='red', 
-            fill=False, linewidth=3, zorder=5
-        )
-        ax.add_patch(highlight)
-        turn_highlights.append(highlight)
+    if(state.turn_number > 9):
+        rolled_hexes = state.board.roll_index.get(roll, [])
 
-    ax.set_title(f"Turn {state.turn_number + 1} | {player.id} rolled: {roll}", fontsize=16, weight='bold')
+        for hex_tile in rolled_hexes:
+            q, r, s = hex_tile.coordinate
+            x = h_dist * (q + r / 2.0)
+            y = v_dist * r
+            
+            highlight = plt.Circle(
+                (x, y), radius=0.25, color='red', 
+                fill=False, linewidth=3, zorder=5
+            )
+            ax.add_patch(highlight)
+            turn_highlights.append(highlight)
+
+        ax.set_title(f"Turn {state.turn_number + 1} | {player.id} rolled: {roll}", fontsize=16, weight='bold')
     
     fig.canvas.draw_idle()
     plt.pause(0.1)
