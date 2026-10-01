@@ -6,7 +6,7 @@ import numpy as np
 from matplotlib.patches import RegularPolygon
 plt.ion()
 
-STRATS = ["heuristic", "heuristic", "heuristic-trade-adaptive", "random"]
+STRATS = ["heuristic", "heuristic", "heuristic-trade-adaptive", "heuristic-trade-adaptive"]
 
 DICE_PROBABILITY = {2: 1, 3: 2, 4: 3, 5: 4, 6: 5, 7: 6, 8: 5, 9: 4, 10: 3, 11: 2, 12: 1}
 SETTLEMENT_URGENCY = 1.5 #How urgent it is to construct a settlement
@@ -506,6 +506,33 @@ class GameState:
                         "give": "Wood",
                         "get": get_resource
                     })
+
+        if player.resources["Wheat"] >= 4:
+                    for get_resource in ["Wood", "Wool", "Ore"]:
+                        if self.bank[get_resource] > 0:
+                            actions.append({
+                                "type": "maritime",
+                                "give": "Wheat",
+                                "get": get_resource
+                            })
+
+        if player.resources["Wool"] >= 4:
+                    for get_resource in ["Wheat", "Wood", "Ore"]:
+                        if self.bank[get_resource] > 0:
+                            actions.append({
+                                "type": "maritime",
+                                "give": "Wool",
+                                "get": get_resource
+                            })
+
+        if player.resources["Ore"] >= 4:
+                    for get_resource in ["Wheat", "Wool", "Wood"]:
+                        if self.bank[get_resource] > 0:
+                            actions.append({
+                                "type": "maritime",
+                                "give": "Ore",
+                                "get": get_resource
+                            })
         actions.append({"type": "pass"})
 
         return actions
@@ -571,9 +598,7 @@ class GameState:
 
         elif action_type == "pass":
             print(f"Player {player.id} passed.")
-            
-#Making example settlements/cities
-# Create the game state
+
 state = GameState(engine, num_players=4)
 all_vertex_keys = list(engine.vertices.keys())
 
@@ -646,7 +671,7 @@ def play_turn_with_visuals(state, ax, fig, road_artists, building_artists):
         ax.set_title(f"Turn {state.turn_number + 1} | {player.id} rolled: {roll}", fontsize=16, weight='bold')
     
     fig.canvas.draw_idle()
-    plt.pause(0.01)
+    plt.pause(0.1)
 
     for patch in turn_highlights:
         patch.remove()
