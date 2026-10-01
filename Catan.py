@@ -6,6 +6,8 @@ import numpy as np
 from matplotlib.patches import RegularPolygon
 plt.ion()
 
+STRATS = ["heuristic", "heuristic", "heuristic-trade-adaptive", "random"]
+
 DICE_PROBABILITY = {2: 1, 3: 2, 4: 3, 5: 4, 6: 5, 7: 6, 8: 5, 9: 4, 10: 3, 11: 2, 12: 1}
 SETTLEMENT_URGENCY = 1.5 #How urgent it is to construct a settlement
 ORE_CITY_URGENCY = 2.0
@@ -208,11 +210,11 @@ class Player:
         #how much do we need a reousrce?
         res = self.resources
 
-        urgency = {k: 0.0 for k in res.keys()} #Base nothing value
+        urgency = {k: 0.0 for k in res.keys()}
 
         for r in ["Wood", "Brick", "Wheat", "Wool",]:
             if res[r] == 0:
-                urgency[r] += SETTLEMENT_URGENCY               #EXPERIMENTAL VALUE FOR SETTLEMENT URGENCY
+                urgency[r] += SETTLEMENT_URGENCY
 
         if res["Ore"] < 3:
             urgency["Ore"] += ORE_CITY_URGENCY
@@ -255,11 +257,11 @@ class Player:
             urgency = self.get_res_urgency()
 
             value_gained = sum(urgency[r] * amount for r, amount in trade["give"].items())
-            value_lost = sum(urgency[r] * amoutn for r, amoutn in trade["receive"].items())
+            value_lost = sum(urgency[r] * amount for r, amount in trade["receive"].items())
 
             trade_score = value_gained - value_lost
 
-            if self.strat == "heuristic2":
+            if self.strat == "heuristic-trade-adaptive":
                 proposing_player = state.active_player
                 if proposing_player.victory_points >= 8:
                     trade_score -= ENDGAME_TRADE_SUB  # Tighten restrictions heavily near endgame
@@ -304,7 +306,7 @@ class Player:
 
     def choose_action(self, state):
         actions = state.get_actions()
-        if self.strat == "heuristic":
+        if self.strat == "heuristic" or "heuristic-trade-adaptive":
             scored_actions = [(self.eval_action(a, state), a) for a in actions]
             best_action = max(scored_actions, key=lambda item: item[0])[1]
             return best_action
@@ -314,10 +316,9 @@ class Player:
 class GameState:
     def __init__(self, board, num_players=4): #Constructor
         self.board = board
-        strats = ["heuristic", "heuristic", "heuristic", "heuristic"]
 
         self.players = [
-            Player(id=i, strat=strats[i % len(strats)])
+            Player(id=i, strat=STRATS[i % len(STRATS)])
             for i in range(num_players)
         ]
 
@@ -326,9 +327,62 @@ class GameState:
         self.dice_roll = None
         self.game_over = False
 
+        self.bank = {
+            "Wood": 19,
+            "Brick": 19,
+            "Wheat": 19,
+            "Wool": 19,
+            "Ore": 19
+        }
+
+        self.history = {
+            "turn": [],
+            "vp": {p.id: [] for p in self.players},
+            "resources": {
+                p.id: {r: [] for r in p.resources}
+                for p in self.players
+            },
+            "urgency": {
+                p.id: {r: [] for r in p.resources}
+                for p in self.players
+            },
+            "hand_size": {p.id: [] for p in self.players},
+            "bank": {r: [] for r in self.bank}
+        }
+
+    def record_state(self):
+        self.history["turn"].append(self.turn_number)
+
+        for p in self.players:
+            self.history["vp"][p.id].append(p.victory_points)
+
+            for resource in p.resources:
+                self.history["resources"][p.id][resource].append(
+                    p.resources[resource]
+                )
+
+            urgency = p.get_res_urgency()
+
+            for resource in urgency:
+                self.history["urgency"][p.id][resource].append(
+                    urgency[resource]
+                )
+
+            self.history["hand_size"][p.id].append(
+                sum(p.resources.values())
+            )
+            for resource in self.bank:
+                self.history["bank"][resource].append(
+                    self.bank[resource]
+                )
+
     @property
     def active_player(self):
         return self.players[self.current_player]
+
+    def spend_resource(self, player, resource, amount):
+        player.resources[resource] -= amount
+        self.bank[resource] += amount
 
     def give_resources(self, roll):
         if roll == 7:
@@ -343,7 +397,12 @@ class GameState:
                     owner = next((p for p in self.players if p.id == vertex.owner_id), None)
                     if owner:
                         income = 1 if vertex.building_type == "Settlement" else 2
+                        if(self.bank.get(hex_tile.resource) < 1):
+                            income = 0
+                        if(self.bank.get(hex_tile.resource) < 2):
+                            income = 1
                         owner.resources[hex_tile.resource] += income
+                        self.bank[hex_tile.resource] -= income
                         print(f" -> Player_{owner.id} gained +{income} {hex_tile.resource}!")
 
     def execute_trade(self, proposer, receiver, trade):
@@ -499,6 +558,7 @@ all_vertex_keys = list(engine.vertices.keys())
 def roll_dice():
     return random.randint(1, 6) + random.randint(1, 6)
 def play_turn_with_visuals(state, ax, fig, road_artists, building_artists):
+    state.record_state()
     player = state.active_player
     if(state.turn_number > 9):
         roll = roll_dice()
@@ -651,9 +711,131 @@ def setup_catan_board_visuals(board: CatanBoard):
     return fig, ax, road_artists, building_artists
 
 fig, ax, road_artists, building_artists = setup_catan_board_visuals(engine)
- 
+
 for _ in range(100):
     play_turn_with_visuals(state, ax, fig, road_artists, building_artists)
 
 plt.ioff()
 plt.show()
+
+def plot_resources(state, player_id):
+    turns = state.history["turn"]
+
+    plt.figure(figsize=(10, 5))
+
+    for resource in state.history["resources"][player_id]:
+        values = state.history["resources"][player_id][resource]
+
+        plt.plot(turns, values, label=resource)
+
+    plt.xlabel("Turn")
+    plt.ylabel("Resources Held")
+    plt.title(f"Player {player_id} Resource Inventory")
+    plt.legend()
+    plt.grid(alpha=0.3)
+    plt.show()
+
+def plot_urgency(state, player_id):
+    turns = state.history["turn"]
+
+    plt.figure(figsize=(10, 5))
+
+    for resource in state.history["urgency"][player_id]:
+        values = state.history["urgency"][player_id][resource]
+
+        plt.plot(turns, values, label=resource)
+
+    plt.xlabel("Turn")
+    plt.ylabel("Urgency")
+    plt.title(f"Player {player_id} Resource Urgency")
+    plt.legend()
+    plt.grid(alpha=0.3)
+    plt.show()
+
+def plot_vp(state):
+    turns = state.history["turn"]
+
+    plt.figure(figsize=(10, 5))
+
+    for player_id in state.history["vp"]:
+        plt.plot(
+            turns,
+            state.history["vp"][player_id],
+            label=f"Player {player_id}"
+        )
+
+    plt.xlabel("Turn")
+    plt.ylabel("Victory Points")
+    plt.title("Victory Points Over Time")
+    plt.legend()
+    plt.grid(alpha=0.3)
+    plt.show()
+
+def plot_hand_size(state):
+    turns = state.history["turn"]
+
+    plt.figure(figsize=(10, 5))
+
+    for player_id in state.history["hand_size"]:
+        plt.plot(
+            turns,
+            state.history["hand_size"][player_id],
+            label=f"Player {player_id}"
+        )
+
+    plt.axhline(7, linestyle="--", label="7-card threshold")
+
+    plt.xlabel("Turn")
+    plt.ylabel("Cards in Hand")
+    plt.title("Resource Hand Size")
+    plt.legend()
+    plt.grid(alpha=0.3)
+    plt.show()
+
+def plot_bank(state):
+    turns = state.history["turn"]
+
+    plt.figure(figsize=(10, 5))
+
+    for resource in state.history["bank"]:
+        plt.plot(
+            turns,
+            state.history["bank"][resource],
+            label=resource
+        )
+
+    plt.axhline(0, linestyle="--")
+
+    plt.xlabel("Turn")
+    plt.ylabel("Cards Remaining in Bank")
+    plt.title("Resource Bank Supply")
+    plt.legend()
+    plt.grid(alpha=0.3)
+    plt.show()
+
+def plot_scarcity(state):
+    turns = state.history["turn"]
+    plt.figure(figsize=(10,5))
+
+    for resource in state.history["bank"]:
+        plt.plot(
+            turns,
+            (1- state.bank[resource] / 19),
+            label=resource
+        )
+    plt.axhline(0, linestyle="--")
+    
+    plt.xlabel("Turn")
+    plt.ylabel("Scarcity (1- Bank / 19)")
+    plt.title("Scarcity over time")
+    plt.legend()
+    plt.grid(alpha=0.3)
+    plt.show()
+    
+
+plot_resources(state, 0)
+plot_urgency(state, 0)
+plot_vp(state)
+plot_hand_size(state)
+plot_bank(state)
+plot_scarcity(state)
