@@ -6,7 +6,7 @@ import numpy as np
 from matplotlib.patches import RegularPolygon
 plt.ion()
 
-STRATS = ["heuristic", "heuristic", "heuristic-trade-adaptive", "heuristic-trade-adaptive"]
+STRATS = ["heuristic-ap-econ-trading", "heuristic-ap-econ-trading", "heuristic-ap-econ-trading", "heuristic-ap-econ-trading"]
 
 DICE_PROBABILITY = {2: 1, 3: 2, 4: 3, 5: 4, 6: 5, 7: 6, 8: 5, 9: 4, 10: 3, 11: 2, 12: 1}
 SETTLEMENT_URGENCY = 1.5 #How urgent it is to construct a settlement
@@ -111,7 +111,17 @@ class CatanBoard:
                     
         return numbers
 
+    def get_numbers_for_resource_for_vertex(self, vertex_coords: Tuple) -> List[Tuple[str, int]]:
+        resource_mappings = []
 
+        for hex_coord in vertex_coords:
+            if hex_coord in self.hexes:
+                hex_tile = self.hexes[hex_coord]
+                
+                if hex_tile.number_token is not None and hex_tile.number_token > 0:
+                    resource_mappings.append((hex_tile.resource, hex_tile.number_token))
+
+        return resource_mappings
 
 def get_vertex_xy(vertex_key, size=1.0):
     #Gives the x y value of a vertex
@@ -228,7 +238,7 @@ class Player:
         return urgency
 
     def propose_trade(self, state, other_player) -> Optional[Dict]:
-        if self.strat != "heuristic":
+        if self.strat == "random":
             return None
 
         urgency = self.get_res_urgency()
@@ -246,30 +256,58 @@ class Player:
         return None
 
     def evaluate_trade(self, trade: Dict, state) -> bool:
-        if self.strat != "heuristic":
-            return random.random() < RANDOM_TRADE_BORDER
-
-        #If we cna't afford it, no deal
         for res, amount in trade["receive"].items():
+            #if we can't afford, no deal
             if self.resources[res] < amount:
                 return False
 
-            urgency = self.get_res_urgency()
+            if self.strat == "random":#Random ai trades based on randomness
+                return random.random() < RANDOM_TRADE_BORDER
 
-            value_gained = sum(urgency[r] * amount for r, amount in trade["give"].items())
-            value_lost = sum(urgency[r] * amount for r, amount in trade["receive"].items())
+            if self.strat == "heuristic":
+                urgency = self.get_res_urgency()
 
-            trade_score = value_gained - value_lost
+                value_gained = sum(urgency[r] * amount for r, amount in trade["give"].items())
+                value_lost = sum(urgency[r] * amount for r, amount in trade["receive"].items())
+    
+                trade_score = value_gained - value_lost
+
+                #Accept if trade benefits net value
+                return trade_score > 0.1
 
             if self.strat == "heuristic-trade-adaptive":
+                urgency = self.get_res_urgency()
+                
+                value_gained = sum(urgency[r] * amount for r, amount in trade["give"].items())
+                value_lost = sum(urgency[r] * amount for r, amount in trade["receive"].items())
+    
+                trade_score = value_gained - value_lost
+
                 proposing_player = state.active_player
+
                 if proposing_player.victory_points >= 8:
                     trade_score -= ENDGAME_TRADE_SUB  # Tighten restrictions heavily near endgame
                 elif proposing_player.victory_points > self.victory_points:
                     trade_score -= WINNING_TRADE_SUB  # Slight penalty if they are beating us
+                #Accept if trade benefits net value
+                return trade_score > 0.1
 
-        # Accept if the trade benefits us on net value
-        return trade_score > 0.1
+            if self.strat == "heuristic-ap-econ-trading":
+                give_res, give_amt = next(iter(trade["give"].items()))
+                get_res, get_amt = next(iter(trade["receive"].items()))
+
+                power_give = self.evaluate_production_power(give_res).get(self.id, 0)
+                power_get = self.evaluate_production_power(get_res).get(self.id, 0)
+
+                if power_give == 0:
+                    return False
+
+                opp_cost = power_get / power_give
+                opp_cost *= give_amt
+
+                terms_of_trade = get_amt
+
+                return terms_of_trade > opp_cost
         
     def eval_action(self, action, state):
         score = 0
@@ -306,7 +344,11 @@ class Player:
 
     def choose_action(self, state):
         actions = state.get_actions()
-        if self.strat == "heuristic" or "heuristic-trade-adaptive":
+        if self.strat in (
+            "heuristic",
+            "heuristic-trade-adaptive",
+            "heuristic-ap-econ-trading"
+        ):
             scored_actions = [(self.eval_action(a, state), a) for a in actions]
             best_action = max(scored_actions, key=lambda item: item[0])[1]
             return best_action
@@ -331,9 +373,37 @@ class Player:
             self.resources[least_urgent_res] -= 1
             bank[least_urgent_res] += 1
 
+    def evaluate_production_power(self, resource: str) -> Dict[int, int]:
+        dice_weights = {
+            2: 1, 3: 2, 4: 3, 5: 4, 6: 5,
+            7: 0, 8: 5, 9: 4, 10: 3, 11: 2, 12: 1
+        } #DIFFERENT than dice_prob because 7 shold be weighted as 0
+
+        player_production_power = {}
+
+        for vertex_coord, vertex in engine.vertices.items():
+            if vertex.building_type is not None and vertex.owner_id is not None:
+                
+                tiles_info = engine.get_numbers_for_resource_for_vertex(vertex_coord)
+                
+                for res_name, token in tiles_info:
+                    if res_name == resource:
+                        
+                        multiplier = 2 if vertex.building_type == "City" else 1
+                        roll_probability = dice_weights.get(token, 0)
+                        
+                        tile_power = multiplier * roll_probability
+                        
+                        p_id = vertex.owner_id
+                        if p_id not in player_production_power:
+                            player_production_power[p_id] = 0
+                        player_production_power[p_id] += tile_power
+
+        return player_production_power
+
     
 class GameState:
-    def __init__(self, board, num_players=4): #Constructor
+    def __init__(self, board, num_players=4):
         self.board = board
 
         self.players = [
@@ -766,36 +836,61 @@ for _ in range(100):
 plt.ioff()
 plt.show()
 
-def plot_resources(state, player_id):
+def plot_resources(state):
     turns = state.history["turn"]
+    num_players = len(state.players)
 
     plt.figure(figsize=(10, 5))
 
-    for resource in state.history["resources"][player_id]:
-        values = state.history["resources"][player_id][resource]
+    first_player_id = state.players[0].id
+    resource_types = state.history["resources"][first_player_id].keys()
 
-        plt.plot(turns, values, label=resource)
+    for resource in resource_types:
+        total_values = np.zeros(len(turns), dtype=float)
+
+        for player_id in state.players:
+            player_values = np.array(
+                state.history["resources"][player_id.id][resource], dtype=float
+            )
+            total_values += player_values
+
+        avg_values = total_values / num_players
+
+        plt.plot(turns, avg_values, label=resource)
 
     plt.xlabel("Turn")
-    plt.ylabel("Resources Held")
-    plt.title(f"Player {player_id} Resource Inventory")
+    plt.ylabel("Average Resources Held")
+    plt.title("Average Player Resource Inventory")
     plt.legend()
     plt.grid(alpha=0.3)
     plt.show()
 
-def plot_urgency(state, player_id):
+
+def plot_urgency(state):
     turns = state.history["turn"]
+    num_players = len(state.players)
 
     plt.figure(figsize=(10, 5))
 
-    for resource in state.history["urgency"][player_id]:
-        values = state.history["urgency"][player_id][resource]
+    first_player_id = state.players[0].id
+    resource_types = state.history["urgency"][first_player_id].keys()
 
-        plt.plot(turns, values, label=resource)
+    for resource in resource_types:
+        total_values = np.zeros(len(turns), dtype=float)
+
+        for player_id in state.players:
+            player_values = np.array(
+                state.history["urgency"][player_id.id][resource], dtype=float
+            )
+            total_values += player_values
+
+        avg_values = total_values / num_players
+
+        plt.plot(turns, avg_values, label=resource)
 
     plt.xlabel("Turn")
-    plt.ylabel("Urgency")
-    plt.title(f"Player {player_id} Resource Urgency")
+    plt.ylabel("Average Resource Urgency")
+    plt.title("Average Resource Urgency")
     plt.legend()
     plt.grid(alpha=0.3)
     plt.show()
@@ -882,10 +977,8 @@ def plot_scarcity(state):
     plt.grid(alpha=0.3)
     plt.show()
 
-    
-
-plot_resources(state, 0)
-plot_urgency(state, 0)
+plot_resources(state)
+plot_urgency(state)
 plot_vp(state)
 plot_hand_size(state)
 plot_bank(state)
