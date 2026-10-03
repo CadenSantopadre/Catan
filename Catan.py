@@ -4,6 +4,7 @@ from typing import Dict, List, Tuple, Optional
 import matplotlib.pyplot as plt
 import numpy as np
 from matplotlib.patches import RegularPolygon
+import pandas as pd
 plt.ion()
 
 STRATS = ["heuristic-ap-econ-trading", "heuristic-ap-econ-trading", "heuristic-ap-econ-trading", "heuristic-ap-econ-trading"]
@@ -16,6 +17,8 @@ OVER_URGENCY = 0.5
 RANDOM_TRADE_BORDER = 0.5
 ENDGAME_TRADE_SUB = 2.0
 WINNING_TRADE_SUB = 0.5
+TURNS = 500
+SPEED = 500 # max 500 is recomdnded
 
 
 @dataclass
@@ -248,10 +251,13 @@ class Player:
         #Compared to what we can GIVE(least urgent)
         most_abundant = min(urgency, key=urgency.get)
 
-        if self.resources[most_abundant] > 1 and urgency[most_needed] > 1.0:
+        give_amount = min(3, self.resources[most_abundant] - 1)
+        receive_amount = 1
+
+        if give_amount > 0 and urgency[most_needed] > 1.0:
             return {
-                "give": {most_abundant: 1},
-                "receive": {most_needed: 1}
+                "give": {most_abundant: give_amount},
+                "receive": {most_needed: receive_amount}
             }
         return None
 
@@ -260,6 +266,8 @@ class Player:
             #if we can't afford, no deal
             if self.resources[res] < amount:
                 return False
+
+            is_accpeted = False
 
             if self.strat == "random":#Random ai trades based on randomness
                 return random.random() < RANDOM_TRADE_BORDER
@@ -273,7 +281,7 @@ class Player:
                 trade_score = value_gained - value_lost
 
                 #Accept if trade benefits net value
-                return trade_score > 0.1
+                is_accepted =  trade_score > 0.1
 
             if self.strat == "heuristic-trade-adaptive":
                 urgency = self.get_res_urgency()
@@ -290,24 +298,44 @@ class Player:
                 elif proposing_player.victory_points > self.victory_points:
                     trade_score -= WINNING_TRADE_SUB  # Slight penalty if they are beating us
                 #Accept if trade benefits net value
-                return trade_score > 0.1
+                is_accepted =  trade_score > 0.1
 
             if self.strat == "heuristic-ap-econ-trading":
+                # 1. Unpack what we receive (give_res) and what we part with (get_res)
                 give_res, give_amt = next(iter(trade["give"].items()))
                 get_res, get_amt = next(iter(trade["receive"].items()))
 
-                power_give = self.evaluate_production_power(give_res).get(self.id, 0)
-                power_get = self.evaluate_production_power(get_res).get(self.id, 0)
+                # 2. Get production capabilities (PPF outputs)
+                power_give = self.evaluate_production_power(give_res).get(self.id, 0) + 0.0001
+                power_get = self.evaluate_production_power(get_res).get(self.id, 0) + 0.0001
 
-                if power_give == 0:
-                    return False
+                if power_give <= 0.0001:
+                    is_accepted = False
+                else:
+                    # 3. AP Econ Formula: Cost of 1 Gain = (What you sacrifice / What you gain)
+                    # This calculates our internal cost of producing 1 unit of 'give_res' 
+                    # expressed in terms of 'get_res'.
+                    internal_opp_cost = power_get / power_give
 
-                opp_cost = power_get / power_give
-                opp_cost *= give_amt
+                    # 4. AP Econ Formula: Terms of Trade = (Total Sacrificed / Total Gained)
+                    # This calculates the market price of 1 unit of 'give_res' 
+                    # expressed in terms of 'get_res'.
+                    terms_of_trade = get_amt / give_amt
 
-                terms_of_trade = get_amt
+                    # 5. Accept condition: Import if the market price (Terms of Trade) 
+                    # is cheaper than our domestic opportunity cost.
+                    is_accepted = terms_of_trade < internal_opp_cost
 
-                return terms_of_trade > opp_cost
+
+        state.record_trade_proposal(
+            res_wanted=get_res,
+            qty_wanted=get_amt,
+            res_offered=give_res,
+            qty_offered=give_amt,
+            is_accepted=is_accepted
+        )
+
+        return is_accepted
         
     def eval_action(self, action, state):
         score = 0
@@ -438,6 +466,17 @@ class GameState:
             "hand_size": {p.id: [] for p in self.players},
             "bank": {r: [] for r in self.bank}
         }
+        # Append to this structure whenever a player makes an offer
+        self.trade_history = {
+            "turn": [],              # int (e.g., 14)
+            "resource_wanted": [],   # string (e.g., "Brick")
+            "resource_offered": [],  # string (e.g., "Ore")
+            "qty_wanted": [],        # int (e.g., 1)
+            "qty_offered": [],       # int (e.g., 2)
+            "implied_price": [],     # float (qty_offered / qty_wanted) -> e.g., 2.0
+            "accepted": []           # bool (True if turn-bearer accepted, False if rejected)
+        }
+
 
     def record_state(self):
         self.history["turn"].append(self.turn_number)
@@ -465,6 +504,24 @@ class GameState:
             self.history["bank"][resource].append(
                 self.bank[resource]
             )
+
+    def record_trade_proposal(self, res_wanted, qty_wanted, res_offered, qty_offered, is_accepted):
+        """
+        Logs an individual trade offer made to the turn-bearer before or 
+        after they decide to accept/reject it.
+        """
+        self.trade_history["turn"].append(self.turn_number)
+        self.trade_history["resource_wanted"].append(res_wanted)
+        self.trade_history["resource_offered"].append(res_offered)
+        self.trade_history["qty_wanted"].append(qty_wanted)
+        self.trade_history["qty_offered"].append(qty_offered)
+        
+        # Calculate implied price (avoiding division by zero just in case)
+        price = qty_offered / qty_wanted if qty_wanted > 0 else 0
+        self.trade_history["implied_price"].append(price)
+        
+        self.trade_history["accepted"].append(is_accepted)
+
 
     @property
     def active_player(self):
@@ -508,6 +565,7 @@ class GameState:
             proposer.resources[res] += amt
 
         print(f"TRADE: Player {proposer.id} traded {amt} {res} with Player {receiver.id}")
+        
 
     def get_actions(self):
         player = self.active_player
@@ -515,7 +573,7 @@ class GameState:
         firstfew = False
         if(len(player.settlements) + len(player.cities) < 2):
             firstfew = True
-        if player.resources["Wood"] >= 1 and player.resources["Brick"] >= 1 and player.resources["Wheat"] >= 1 and player.resources["Wool"] >= 1:
+        if player.resources["Wood"] >= 1 and player.resources["Brick"] >= 1 and player.resources["Wheat"] >= 1 and player.resources["Wool"] >= 1 and len(player.settlements) < 5:
             
             for v_key, vertex in self.board.vertices.items():
                 if vertex.building_type is None:
@@ -544,12 +602,12 @@ class GameState:
                         actions.append({"type": "build_settlement", "vertex_key": v_key})
 
 
-        if player.resources["Wheat"] >= 2 and player.resources["Ore"] >= 3:
+        if player.resources["Wheat"] >= 2 and player.resources["Ore"] >= 3 and len(player.cities) < 4:
             for v_key, vertex in self.board.vertices.items():
                 if vertex.building_type == "Settlement" and vertex.owner_id == player.id:
                     actions.append({"type": "build_city", "vertex_key": v_key})
 
-        if(player.resources["Wood"] >= 1 and player.resources["Brick"] >= 1):
+        if(player.resources["Wood"] >= 1 and player.resources["Brick"] >= 1 and len(player.roads) < 15):
             for edge_key, edge in self.board.edges.items():
                 if edge.owner_id is None:
                     v1, v2 = edge_key
@@ -651,6 +709,7 @@ class GameState:
         elif action_type == "build_road":
             e_key = action["edge_key"]
             edge = self.board.edges[e_key]
+            player.roads.append(e_key)
             
             edge.owner_id = player.id
             player.resources["Wood"] -= 1
@@ -741,7 +800,7 @@ def play_turn_with_visuals(state, ax, fig, road_artists, building_artists):
         ax.set_title(f"Turn {state.turn_number + 1} | {player.id} rolled: {roll}", fontsize=16, weight='bold')
     
     fig.canvas.draw_idle()
-    plt.pause(0.1)
+    plt.pause(1/SPEED)
 
     for patch in turn_highlights:
         patch.remove()
@@ -830,7 +889,7 @@ def setup_catan_board_visuals(board: CatanBoard):
 
 fig, ax, road_artists, building_artists = setup_catan_board_visuals(engine)
 
-for _ in range(100):
+for _ in range(TURNS):
     play_turn_with_visuals(state, ax, fig, road_artists, building_artists)
 
 plt.ioff()
@@ -977,9 +1036,99 @@ def plot_scarcity(state):
     plt.grid(alpha=0.3)
     plt.show()
 
+import matplotlib.pyplot as plt
+import numpy as np
+import pandas as pd
+
+def plot_resource_elasticity_lines(trade_history):
+    df = pd.DataFrame(trade_history)
+    if df.empty or len(df) < 10:
+        print("Not enough trade data collected yet to calculate rolling elasticity coefficients.")
+        return
+
+    resources = df['resource_wanted'].unique()
+    
+    plt.figure(figsize=(12, 6))
+    turn_intervals = []
+    elasticity_trends = {res: [] for res in resources}
+    
+    max_turn = int(df['turn'].max())
+    window_size = 12
+    step = 2
+    
+    for start_turn in range(1, max_turn - window_size + 2, step):
+        end_turn = start_turn + window_size
+        mid_turn = start_turn + (window_size / 2)
+        
+        # Filter data for this time frame
+        window_df = df[(df['turn'] >= start_turn) & (df['turn'] < end_turn)]
+        if len(window_df) < 4:
+            continue
+            
+        turn_intervals.append(mid_turn)
+        
+        for res in resources:
+            res_df = window_df[window_df['resource_wanted'] == res]
+            
+            # We need at least two different price points in this window to calculate delta P and delta Q
+            unique_prices = np.sort(res_df['implied_price'].unique())
+            
+            if len(unique_prices) >= 2:
+                # Group by the two most common price points in this window
+                price_groups = res_df.groupby('implied_price')['accepted'].agg(['mean', 'count'])
+                price_groups = price_groups[price_groups['count'] >= 1].sort_index()
+                
+                if len(price_groups) >= 2:
+                    # Pick P1 (fair/low price) and P2 (premium/high price)
+                    P1, P2 = price_groups.index[0], price_groups.index[-1]
+                    Q1, Q2 = price_groups['mean'].iloc[0], price_groups['mean'].iloc[-1]
+                    
+                    # Avoid division by zero if acceptance rates or prices are identical
+                    if (Q1 + Q2) > 0 and Q1 != Q2 and P1 != P2:
+                        pct_change_Q = (Q2 - Q1) / ((Q1 + Q2) / 2)
+                        pct_change_P = (P2 - P1) / ((P1 + P2) / 2)
+                        
+                        Ed = abs(pct_change_Q / pct_change_P)
+                        # Cap extreme outliers for clean graphing
+                        elasticity_trends[res].append(min(Ed, 5.0))
+                        continue
+
+            # Default or fallback if data is too thin for this window
+            # If historical trend exists, carry over previous value, else assume 1.0 (Unit Elastic)
+            prev_val = elasticity_trends[res][-1] if elasticity_trends[res] else 1.0
+            elasticity_trends[res].append(prev_val)
+
+    # Plot the lines
+    colors = {'Brick': '#d35400', 'Wood': '#27ae60', 'Ore': '#7f8c8d', 'Wheat': '#f1c40f', 'Wool': '#aec6cf'}
+    
+    for res in resources:
+        if len(elasticity_trends[res]) == len(turn_intervals):
+            plt.plot(turn_intervals, elasticity_trends[res], 
+                     label=f'{res} Elasticity ($E_d$)', 
+                     color=colors.get(res, None), linewidth=2.5)
+
+    # Draw economic boundary indicators
+    plt.axhline(y=1.0, color='red', linestyle='--', alpha=0.6, label='Unit Elastic ($E_d = 1$)')
+    
+    # Graph formatting
+    plt.title('Resource Price Elasticity of Demand ($E_d$) Over Time', fontsize=14, fontweight='bold')
+    plt.xlabel('Game Progression (Rolling Turn Midpoint)', fontsize=11)
+    plt.ylabel('Elasticity Coefficient ($E_d$)', fontsize=11)
+    
+    # Annotate regions
+    plt.text(1.5, 2.5, 'ELASTIC MARKET\n(Price Sensitive)', color='blue', alpha=0.7, fontsize=10, weight='bold')
+    plt.text(1.5, 0.4, 'INELASTIC MARKET\n(Price Insensitive)', color='purple', alpha=0.7, fontsize=10, weight='bold')
+    
+    plt.grid(True, linestyle=':', alpha=0.6)
+    plt.legend(loc='upper right')
+    plt.tight_layout()
+    plt.show()
+
+
 plot_resources(state)
 plot_urgency(state)
 plot_vp(state)
 plot_hand_size(state)
 plot_bank(state)
 plot_scarcity(state)
+plot_resource_elasticity_lines(state.trade_history)
